@@ -1,3 +1,4 @@
+from datetime import date
 import pandas as pd
 from typing import List, Dict, Tuple
 from sqlalchemy.ext.declarative import declarative_base
@@ -24,9 +25,7 @@ NUMERIC_OPTIONS = dict(precision=8, scale=2, decimal_return_scale=None, asdecima
 
 
 def gen_engine():
-    connection_string: str = (
-        "postgresql://localhost:5432/ibdatafetcher"
-    )
+    connection_string: str = "postgresql://localhost:5432/ibdatafetcher"
     engine = create_engine(connection_string, convert_unicode=True)
     return engine
 
@@ -52,7 +51,15 @@ class Quote(Base):
     rth = Column(Boolean)
     value_type = Column(String(20))
 
-    __table_args__ = (Index("ix_quote_local_symbol_ts_value_type", local_symbol, ts, value_type, unique=True),)
+    __table_args__ = (
+        Index(
+            "ix_quote_local_symbol_ts_value_type",
+            local_symbol,
+            ts,
+            value_type,
+            unique=True,
+        ),
+    )
 
 
 def db_insert_df_conflict_on_do_nothing(
@@ -61,12 +68,13 @@ def db_insert_df_conflict_on_do_nothing(
     cols = __gen_cols(df)
     values = __gen_values(df)
 
+    # TODO(weston) make it work like, https://stackoverflow.com/questions/4038616/get-count-of-records-affected-by-insert-or-update-in-postgresql
     query_template = "INSERT INTO {table_name} ({cols}) VALUES ({values});"
 
     query = sql.SQL(query_template).format(
         table_name=sql.Identifier(table_name),
-        cols=sql.SQL(', ').join(map(sql.Identifier, cols)),
-        values=sql.SQL(', ').join(sql.Placeholder() * len(cols)),
+        cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
+        values=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
 
     with engine.connect() as con:
@@ -99,3 +107,31 @@ def __gen_cols(df) -> List[str]:
 
 def transform_rename_df_columns(df) -> None:
     df.rename(columns={"date": "ts", "barCount": "bar_count"}, inplace=True)
+
+
+def clean_query(query: str) -> str:
+    return query.replace("\n", "").replace("\t", "")
+
+
+def data_already_fetched(
+    engine, local_symbol: str, value_type: str, __date: date
+) -> bool:
+    date_str: str = __date.strftime("%Y-%m-%d")
+
+    query = clean_query(
+        f"""
+        select count(*)
+        from {Quote.__tablename__}
+        where
+            local_symbol = '{local_symbol}'
+            and date(ts) = date('{date_str}')
+            and value_type = '{value_type}'
+        """
+    )
+
+    with engine.connect() as con:
+        result = con.execute(query)
+        counts = [x for x in result]
+
+    count = counts[0][0]
+    return count != 0
